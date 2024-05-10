@@ -1,0 +1,124 @@
+# #!/usr/bin/env zsh
+#
+# autovenv
+# -------------------------------------------------------------------------------
+#
+# This script finds the closest Python 3 virtualenv and activates it.
+#
+# If no venv is found in the current or directories up to $HOME, this script will
+# create a venv for the current directory.
+#
+# If it does find a venv in an ancestor directory but you want to force a new
+# venv in the current directory, use the `force` option.
+#
+# Rename the autovenv-created active venv with `./autovenv mv $new_name`.
+# Remove the autovenv-created active venv with `./autovenv rm`.
+#
+# Use with zsh
+# -------------------------------------------------------------------------------
+# Add this to your ~/.zshrc, updating the path to this file:
+#
+#   function autovenv_cd_hook() { eval $(PRINT_VARS=1 ~/path/to/autovenv); }
+#   autoload -U add-zsh-hook
+#   add-zsh-hook chpwd autovenv_cd_hook
+#
+#   plugins(... virtualenv)
+#   ZSH_THEME="autovenv"
+#
+# Show the virtualenv in your zsh prompt with oh-my-zsh! for example:
+#
+#   # ~/.oh-my-zsh/custom/themes/autovenv.zsh-theme
+#   PROMPT='$(virtualenv_prompt_info) '
+#   PROMPT+="%(?:%{$fg_bold[green]%}%1{➜%} :%{$fg_bold[red]%}%1{➜%} ) %{$fg[cyan]%}%c%{$reset_color%}"
+#   PROMPT+=' $(git_prompt_info)'
+#   ZSH_THEME_VIRTUALENV_PREFIX="(🐍"
+#   ZSH_THEME_VIRTUALENV_SUFFIX=")"
+#   ZSH_THEME_GIT_PROMPT_PREFIX="%{$fg_bold[blue]%}git:(%{$fg[red]%}"
+#   ZSH_THEME_GIT_PROMPT_SUFFIX="%{$reset_color%} "
+#   ZSH_THEME_GIT_PROMPT_DIRTY="%{$fg[blue]%}) %{$fg[yellow]%}%1{✗%}"
+#   ZSH_THEME_GIT_PROMPT_CLEAN="%{$fg[blue]%})"
+
+[[ $ZSH_EVAL_CONTEXT =~ :file$ ]] && EXIT=exit || EXIT=return
+
+PYTHON_VERSION=$(python3 -V 2>&1 | sed 's/Python //')
+
+VENVS_HOME=${VENVS_HOME:-"$HOME"/.venvs/"$PYTHON_VERSION"}
+
+CURRENT_VENV_NAME=$(basename "$VIRTUAL_ENV")
+[[ -n "$CURRENT_VENV_NAME" ]] && CURRENT_VENV_PATH="$VENVS_HOME"/"$CURRENT_VENV_NAME" || CURRENT_VENV_PATH=""
+
+venv_name=""
+venv_path=""
+
+set_venv_name() {
+    venv_name=$(echo "$1" | sed 's/^\///' | sed 's/\//-/g' | sed 's/[[:space:]]/-/g')
+    [[ "$OSTYPE" = "darwin"* ]] && venv_name=${venv_name//Users-$USER/}
+    venv_name=${venv_name#-}
+    [[ -z "$venv_name" ]] && venv_name="home"
+}
+
+set_venv_path() {
+    venv_path="$HOME"/.venvs/"$PYTHON_VERSION"/"$venv_name"
+}
+
+set_venv_vars() {
+    set_venv_name "$1"
+    set_venv_path
+}
+
+create_venv() {
+    mkdir -p "$venv_path" > /dev/null
+    python3 -m venv "$venv_path"
+    activate_venv
+    "$venv_path"/bin/python3 -m pip install --upgrade pip > /dev/null
+    [[ -f requirements.txt ]] && "$venv_path"/bin/python3 -m pip install -r requirements.txt
+}
+
+activate_venv() {
+    [[ -n "$PRINT_VARS" ]] && {
+        echo "export PATH=\"$venv_path/bin:\$PATH\""
+        echo "export VIRTUAL_ENV=\"$venv_path\""
+        echo "unset PYTHONHOME"
+    } || {
+        export PATH="$venv_path/bin:$PATH"
+        export VIRTUAL_ENV="$venv_path"
+        unset PYTHONHOME
+    }
+}
+
+rm_current_venv() {
+    [[ -n "$CURRENT_VENV_NAME" ]] || return
+    rm -rfi "$CURRENT_VENV_PATH"
+}
+
+rename_current_venv() {
+    [[ -n "$CURRENT_VENV_NAME" ]] || return
+    set_venv_name "$1"
+    [[ "$venv_name" != "$CURRENT_VENV_NAME" ]] && mv "$CURRENT_VENV_PATH" "$VENVS_HOME"/"$venv_name"
+}
+
+find_closest_venv() {
+    path=${1:-$PWD}
+    while [[ "$path" != "$HOME" ]]; do
+        set_venv_vars "$path"
+        [[ -d "$venv_path" ]] && break
+        path=$(dirname "$path")
+    done
+    [[ "$path" = "$HOME" ]] && set_venv_vars "$HOME"
+}
+
+[[ "$1" == "rm" ]] && rm_current_venv && $exit
+[[ "$1" == "mv" ]] && [[ -n "$2" ]] && rename_current_venv "$2" && $exit
+
+[[ -f "$PWD"/requirements.txt ]] ||
+    ([[ -n $(command -v fd) ]] && fd -d 2 -e py '' "$PWD" >/dev/null 2>&1) ||
+    (find "$PWD" -maxdepth 2 -name "*.py" >/dev/null 2>&1) &&
+    PYTHON_RELATED=1 || PYTHON_RELATED=0
+
+[[ "$PWD" = "$HOME"* ]] && ([[ "$PYTHON_RELATED" = "1" ]] || [[ "$1" = "force" ]]) && {
+    [[ "$1" = "force" ]] && set_venv_vars "$PWD" || find_closest_venv
+    [[ -n "$venv_name" ]] && [[ -n "$CURRENT_VENV_NAME" ]] && [[ "$CURRENT_VENV_NAME" != "$venv_name" ]] && deactivate
+    [[ -d "$venv_path" ]] && [[ "$CURRENT_VENV_NAME" != "$venv_name" ]] && activate_venv
+    [[ ! -d "$venv_path" ]] && create_venv
+}
+
